@@ -1,0 +1,355 @@
+import pandas as pd
+import numpy as np
+from scipy.integrate import quad
+from scipy.optimize import minimize
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Parameters
+
+c_light = 299792458 # m/s
+
+G = 6.674 * 10 ** (-11) # SI
+
+kB = 1.38064852 * 10 ** (-23) # SI
+
+T_gamma = 2.725 # SI
+
+h_bar = 1.0545718176461565 * 10 ** (-34) # SI
+
+z_s = 1089
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Planck 2018
+
+H0__ = 67.4 # km/s/Mpc
+h_LCDM = H0__ / 100
+H0_LCDM = H0__ * 1e3 / (3.085677581e22) # s^-1
+
+wb_LCDM = 0.0224
+sigma_wb_LCDM = 0.0001
+wc_LCDM = 0.120
+sigma_wc_LCDM = 0.001
+wbc_LCDM = wb_LCDM + wc_LCDM
+sigma_wbc_LCDM = sigma_wb_LCDM + sigma_wc_LCDM
+N_eff_LCDM = 3.046
+
+Omega_b_LCDM = wb_LCDM / (h_LCDM ** 2)
+Omega_c_LCDM = wc_LCDM / (h_LCDM ** 2)
+
+theta_s_LCDM = 1.0411 * 10 ** (-2)
+sigma_theta_s_LCDM = 0.000003
+
+Omega_m_LCDM = 0.315
+w0_LCDM = -1.0
+wa_LCDM = 0
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Distances
+
+def Omega_gamma(H0):
+    rho_gamma = (np.pi**2 / 15) * (kB * T_gamma)**4 / (h_bar**3 * c_light**5)
+    rho_crit = 3 * H0**2 / (8 * np.pi * G)
+    return rho_gamma / rho_crit
+
+def Omega_radiation(H0):
+    Omega_g = Omega_gamma(H0)
+    N_eff = 3.046
+    f_nu = (7/8) * (4/11)**(4/3) * N_eff
+    return Omega_g * (1 + f_nu)
+
+def rho_DE_ratio(z, w0, wa):
+    a = 1 / (1 + z)
+    return a**(-3 * (1 + w0 + wa)) * np.exp(-3 * wa * (1 - a))
+
+def E(z, H0, Omega_m, w0, wa):
+    Omega_r = Omega_radiation(H0)
+    Omega_L = 1 - (Omega_r + Omega_m)
+    return np.sqrt(Omega_r * (1 + z)**4 + Omega_m * (1 + z)**3 + Omega_L * rho_DE_ratio(z, w0, wa))
+
+def integrand_D_M(z, H0, Omega_m, w0, wa):
+	  return 1 / E(z, H0, Omega_m, w0, wa)
+
+def D_M(z, H0, Omega_m, w0, wa):
+    integral, _ = quad(
+        integrand_D_M,
+        0, z,
+        args=(H0, Omega_m, w0, wa),
+        epsabs=1e-10, epsrel=1e-10
+    )
+    return (c_light / H0) * integral / 3.085677581e22  # Mpc
+
+def D_H(z, H0, Omega_m, w0, wa):
+    return c_light / (H0 * E(z, H0, Omega_m, w0, wa)) / 3.085677581e22  # Mpc
+
+def rd(wb, wbc):
+    N_eff = N_eff_LCDM
+    return 147.05 * (wb / 0.02236) ** (-0.13) * (wbc / 0.1432) ** (-0.23) * (N_eff / 3.04) ** (-0.1) # Mpc
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Theta_star
+
+def R(z, H0, wb):
+    H0_km_s_Mpc = H0 * 3.085677581e22 / 1000
+    h = H0_km_s_Mpc / 100
+    Omega_b = wb / h**2
+    return (3/4) * (Omega_b / Omega_gamma(H0)) / (1 + z)
+
+def c_s(z, H0, wb):
+    return c_light / np.sqrt(3 * (1 + R(z, H0, wb))) # SI
+
+def integrand_rs(z, H0, Omega_m, w0, wa, wb):
+    return c_s(z, H0, wb) / (H0 * E(z, H0, Omega_m, w0, wa))  # SI
+
+def r_s(z, H0, Omega_m, w0, wa, wb):
+    integral, _ = quad(integrand_rs, z, np.inf, args=(H0, Omega_m, w0, wa, wb), epsabs=1e-10, epsrel=1e-10)
+    return integral / 3.085677581e22  # Mpc
+
+def theta_s(H0, Omega_m, w0, wa, wb):
+    rs = r_s(z_s, H0, Omega_m, w0, wa, wb)
+    DA_star = D_M(z_s, H0, Omega_m, w0, wa)
+    return rs / DA_star
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# DESI Table IV and Acoustic scale
+
+data = {
+    'Tracer': ['BGS', 'LRG1', 'LRG2', 'LRG3+ELG1', 'ELG2', 'QSO', 'Lya', 'LRG3', 'ELG1'],
+    'z_eff': [0.295, 0.510, 0.706, 0.934, 1.321, 1.484, 2.330, 0.922, 0.955],
+    'DM/rd': [np.nan, 13.588, 17.351, 21.576, 27.601, 30.512, 38.988, 21.648, 21.707],
+    'err_DM/rd': [np.nan, 0.167, 0.177, 0.152, 0.318, 0.760, 0.531, 0.178, 0.335],
+    'DH/rd': [np.nan, 21.863, 19.455, 17.641, 14.176, 12.817, 8.632, 17.577, 17.803],
+    'err_DH/rd': [np.nan, 0.425, 0.330, 0.193, 0.221, 0.516, 0.101, 0.213, 0.297],
+    'corr': [np.nan, -0.459, -0.404, -0.416, -0.434, -0.500, -0.431, -0.406, -0.462]
+}
+
+df_desi = pd.DataFrame(data)
+
+# rd conversion
+
+rd_value = rd(wb_LCDM, wbc_LCDM)
+
+df_desi["DM"] = df_desi["DM/rd"] * rd_value
+df_desi["DH"] = df_desi["DH/rd"] * rd_value
+df_desi["err_DM"] = df_desi["err_DM/rd"] * rd_value
+df_desi["err_DH"] = df_desi["err_DH/rd"] * rd_value
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# CMB Prior
+
+mu_cmb = np.array([0.01041, 0.02223, 0.14208])
+
+C_cmb = 1e-9 * np.array([
+    [0.006621, 0.12444, -1.1929],
+    [0.12444, 21.344, -94.001],
+    [-1.1929, -94.001, 1488.4]
+])
+
+Cinv_cmb = np.linalg.inv(C_cmb)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# BAO Likelihood 4D
+
+def log_likelihood_4D(params):
+    w0, wa, Om, H0rd = params
+
+    H0 = (H0rd / rd_value) * 1e3 / (3.085677581e22)
+
+    logL = 0
+    for _, row in df_desi.iloc[1:].iterrows():
+        z = row["z_eff"]
+        DM_obs = row["DM"]
+        DH_obs = row["DH"]
+        sigma_DM = row["err_DM"]
+        sigma_DH = row["err_DH"]
+        r = row["corr"]
+
+        cov = np.array([
+            [sigma_DM**2, r * sigma_DM * sigma_DH],
+            [r * sigma_DM * sigma_DH, sigma_DH**2]
+        ])
+
+        inv_cov = np.linalg.inv(cov)
+
+        DM_mod = D_M(z, H0, Om, w0, wa)
+        DH_mod = D_H(z, H0, Om, w0, wa)
+
+        delta = np.array([DM_mod - DM_obs, DH_mod - DH_obs])
+        chi2 = delta.T @ inv_cov @ delta
+        logL += -0.5 * chi2
+
+    return logL
+
+
+def neg_log_likelihood_4D(params):
+    w0, wa, Om, H0rd = params
+    return - 2 * log_likelihood_4D(params)
+
+initial_guess = [-0.4, -1.7, 0.35, 64 * rd_value]
+
+bounds = [(-0.7, 0.0), (-3.0, -1.0), (0.30, 0.45), (9000, 9500)]
+
+result_4D = minimize(neg_log_likelihood_4D, initial_guess, method='L-BFGS-B', bounds=bounds, options={'ftol': 1e-10, 'gtol': 1e-10, 'maxiter': 20000})
+
+w0_best, wa_best, Om_best, H0rd_best = result_4D.x
+
+print("\nBest-fit (w0waCDM) from likelihood maximization:")
+print(f"  w0       = {w0_best:.2f}")
+print(f"  wa       = {wa_best:.2f}")
+print(f"  Omega_m  = {Om_best:.3f}")
+print(f"  H0 * r_d = {H0rd_best:.2f} km/s")
+print(f"  chi2 = {neg_log_likelihood_4D([w0_best, wa_best, Om_best, H0rd_best]):.2f}")
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# BAO+CMB Likelihood 5D
+
+def log_likelihood_cmb(Omega_m, H0_rd, w0, wa, wb):
+    H0_km_s_Mpc = H0_rd / rd_value
+    H0 = H0_km_s_Mpc * 1e3 / 3.085677581e22
+    h = H0_km_s_Mpc / 100
+    theta_star = theta_s(H0, Omega_m, w0, wa, wb)
+    omega_b = wb
+    omega_c = Omega_m * (h ** 2) - omega_b
+    omega_bc = omega_b + omega_c
+    d_model = np.array([theta_star, wb, omega_bc])
+    delta = d_model - mu_cmb
+    chi2 = delta.T @ Cinv_cmb @ delta
+
+    for idx, row in df_desi.iloc[1:].iterrows():
+        z = row["z_eff"]
+        DM_obs = row["DM"]
+        DH_obs = row["DH"]
+        sigma_DM = row["err_DM"]
+        sigma_DH = row["err_DH"]
+        r = row["corr"]
+
+        cov = np.array([
+            [sigma_DM ** 2, r * sigma_DM * sigma_DH],
+            [r * sigma_DM * sigma_DH, sigma_DH ** 2]
+        ])
+
+        inv_cov = np.linalg.inv(cov)
+
+        DM_mod = D_M(z, H0, Omega_m, w0, wa)
+        DH_mod = D_H(z, H0, Omega_m, w0, wa)
+
+        delta = np.array([DM_mod - DM_obs, DH_mod - DH_obs])
+
+        chi2 += delta.T @ inv_cov @ delta
+
+    return -0.5 * chi2
+
+def neg_log_likelihood_cmb(params):
+    Om, H0rd, w0, wa, wb = params
+    return - 2 * log_likelihood_cmb(Om, H0rd, w0, wa, wb)
+
+initial_guess_cmb = [0.35, 64 * rd_value, -0.4, -1.7, 0.022]
+
+bounds_cmb = [(0.30, 0.40), (9000, 10000), (-0.7, 0.0), (-3.0, -1.0), (0.01, 0.03)]
+
+result_cmb = minimize(neg_log_likelihood_cmb, initial_guess_cmb, method='L-BFGS-B', bounds=bounds_cmb, options={'ftol': 1e-10, 'gtol': 1e-10, 'maxiter': 10000})
+
+Om_best_cmb, H0rd_best_cmb, w0_best_cmb, wa_best_cmb, wb_best_cmb = result_cmb.x
+print("\nBest-fit from likelihood_cmb maximization:")
+print(f"  Omega_m = {Om_best_cmb:.4f}")
+print(f"  H0 * r_d = {H0rd_best_cmb:.2f} km/s")
+print(f"  w0 = {w0_best_cmb:.2f}")
+print(f"  wa = {wa_best_cmb:.2f}")
+print(f"  wb = {wb_best_cmb:.5f}")
+print(f"  chi2 = {neg_log_likelihood_cmb([Om_best_cmb, H0rd_best_cmb, w0_best_cmb, wa_best_cmb, wb_best_cmb]):.2f}")
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+w0_vals = np.linspace(-1.5, 0.5, 100)
+wa_vals = np.linspace(-3.0, 0.5, 100)
+W0_grid, WA_grid = np.meshgrid(w0_vals, wa_vals)
+chi2_grid = np.zeros(W0_grid.shape)
+
+for i in range(W0_grid.shape[0]):
+    print(i)
+    for j in range(W0_grid.shape[1]):
+        print(j)
+        w0_temp = W0_grid[i, j]
+        wa_temp = WA_grid[i, j]
+
+        res_temp = minimize(
+            lambda theta: neg_log_likelihood_4D([w0_temp, wa_temp, theta[0], theta[1]]),
+            x0=[0.35, 64 * rd_value],
+            bounds=[(0.25, 0.50), (8000, 11000)],
+            method='L-BFGS-B',
+            options={'ftol': 1e-8, 'gtol': 1e-8, 'maxiter': 20000}
+        )
+        chi2_grid[i, j] = res_temp.fun
+
+chi2_min = np.min(chi2_grid)
+
+delta_chi2 = chi2_grid - chi2_min
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+chi2_grid_cmb = np.zeros(W0_grid.shape)
+
+for i in range(W0_grid.shape[0]):
+    print(i)
+    for j in range(W0_grid.shape[1]):
+        print(j)
+        w0_temp = W0_grid[i, j]
+        wa_temp = WA_grid[i, j]
+
+        res_temp = minimize(
+            lambda theta: neg_log_likelihood_cmb([theta[0], theta[1], w0_temp, wa_temp, theta[2]]),
+            x0=[0.35, 64 * rd_value, 0.022],
+            bounds=[(0.30, 0.40), (9000, 10000), (0.01, 0.03)],
+            method='L-BFGS-B',
+            options={'ftol': 1e-8, 'gtol': 1e-8, 'maxiter': 20000}
+        )
+        chi2_grid_cmb[i, j] = res_temp.fun
+
+chi2_min_cmb = np.min(chi2_grid_cmb)
+
+delta_chi2_cmb = chi2_grid_cmb - chi2_min_cmb
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+fig, ax = plt.subplots(figsize=(6, 5))
+
+cf = ax.contourf(W0_grid, WA_grid, delta_chi2, levels=[0] + [2.30, 6.18], colors=["#1f78b4", "#a6cee3"], alpha=0.7)
+
+c_lines = ax.contour(W0_grid, WA_grid, delta_chi2, levels=[2.30, 6.18], colors='black', linewidths=1.0)
+
+ax.plot(w0_best, wa_best, 'ko', label="BAO Best-fit")
+
+cf_cmb = ax.contourf(W0_grid, WA_grid, chi2_grid_cmb, levels=[0] + [2.30, 6.18], colors=["#e78ac3", "#f1b6da"], alpha=0.5)
+
+c_lines_cmb = ax.contour(W0_grid, WA_grid, chi2_grid_cmb, levels=[2.30, 6.18], colors="#e78ac3", linewidths=1.0)
+
+ax.plot(w0_best_cmb, wa_best_cmb, "k*", label="BAO+CMB Best-fit")
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+ax.set_xlabel(r"$w_0$", fontsize=12)
+ax.set_ylabel(r"$w_a$", fontsize=12)
+ax.set_xlim(-1.2, 0.3)
+ax.set_ylim(-3.0, 0.5)
+
+desi_patch = mpatches.Patch(color="#1f78b4", alpha=0.7, label="BAO")
+cmb_patch  = mpatches.Patch(color="#e78ac3", alpha=0.5, label="BAO+CMB")
+
+bf_desi_legend = Line2D([0], [0], marker='o', color='k', linestyle='None', markersize=8, label="BAO Best-fit")
+bf_cmb_legend  = Line2D([0], [0], marker='*', color='k', linestyle='None', markersize=12, label="BAO+CMB Best-fit")
+
+ax.legend(handles=[desi_patch, cmb_patch, bf_desi_legend, bf_cmb_legend], loc="upper right", frameon=True)
+
+plt.grid(True)
+plt.tight_layout()
+plt.show()
